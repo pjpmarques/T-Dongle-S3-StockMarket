@@ -119,10 +119,12 @@ void getQuotes() {
       ndx.current = doc["quoteResponse"]["result"][1]["regularMarketPrice"];
       ndx.previousClose = doc["quoteResponse"]["result"][1]["regularMarketPreviousClose"];
       ndx.percentageChange = doc["quoteResponse"]["result"][1]["regularMarketChangePercent"];
+      ndx.marketOpen = strcmp(doc["quoteResponse"]["result"][1]["marketState"], "REGULAR") == 0 ? true : false;
       
       bnd.current = (double)(doc["quoteResponse"]["result"][2]["regularMarketPrice"]) * 1000.0;
       bnd.previousClose = (double)(doc["quoteResponse"]["result"][2]["regularMarketPreviousClose"]) * 1000.0;
       bnd.percentageChange = doc["quoteResponse"]["result"][2]["regularMarketChangePercent"];
+      bnd.marketOpen = strcmp(doc["quoteResponse"]["result"][2]["marketState"], "REGULAR") == 0 ? true : false;
       
       Serial.printf("SPX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", spx.current, spx.previousClose, spx.percentageChange, spx.marketOpen);
       Serial.printf("NDX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", ndx.current, ndx.previousClose, ndx.percentageChange, ndx.marketOpen);
