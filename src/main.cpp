@@ -3,31 +3,51 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
 #include <ESP_WiFiManager.h>
 
 #include "pin_config.h"
 
 // ------------------------------------------------------------------------------------
+// Constants
 const int TFT_FONT = 4;           // Font to use on the TFT
-const int BUF_SIZE = 80;
-const int DELAY = 2000;           // Display things on the TFT for 2 seconds
+const int BUF_SIZE = 80;          // Buffer size for string operations
+const int DELAY = 2000;           // Display things on the TFT for 2 seconds (2000ms)
+const char* USER_AGENT = "Mozilla/5.0";  // User agent for HTTP requests
 
+// Global objects
 TFT_eSPI tft;                     // The TFT object
-int black_width;                  // Width of the rectagle that needs to be cleared when stocks update
-// ------------------------------------------------------------------------------------
+int black_width;                  // Width of the rectangle that needs to be cleared when stocks update
 
-// Given a number convert it to a thousands separated string using a specific separating character
+// ------------------------------------------------------------------------------------
+// Data structures
+
+// A structure that represents a stock quote with its value, previous close, change and if the market is open
+typedef struct {
+  double current;
+  double previousClose;
+  double percentageChange;
+  bool marketOpen;
+} quote;
+
+// Stock quotes (S&P500, NASDAQ100 and T-Bill 10 years)
+quote spx, ndx, bnd;
+
+// ------------------------------------------------------------------------------------
+// Helper functions
+
+// Format a number with thousands separator and optional decimal places
 void comma_separator(double num, char *str, char sep, int decimals = 0) {
     char temp[BUF_SIZE];
     int i = 0, j = 0;
+    
+    // Create format string and format the number
     char format[10];
     sprintf(format, "%%0.%df", decimals);
     sprintf(temp, format, num);
-    int len = strlen(temp);
-    int decimalPos = -1;
     
     // Find decimal point position
+    int len = strlen(temp);
+    int decimalPos = -1;
     for (i = 0; i < len; i++) {
         if (temp[i] == '.') {
             decimalPos = i;
@@ -35,7 +55,7 @@ void comma_separator(double num, char *str, char sep, int decimals = 0) {
         }
     }
     
-    // Handle the whole number part
+    // Handle the whole number part with thousands separators
     i = 0;
     int k = (decimalPos != -1 ? decimalPos : len) % 3;
     if (k == 0) k = 3;
@@ -60,67 +80,7 @@ void comma_separator(double num, char *str, char sep, int decimals = 0) {
     str[j] = '\0';
 }
 
-// ------------------------------------------------------------------------------------
-
-// Initialize the ESP32
-void setup() {
-  // Serial port and TFT init
-  Serial.begin(115200);
-  tft.init();
-  tft.setTextFont(7);
-  tft.fillRect(0, 0, TFT_WIDTH, TFT_HEIGHT, TFT_BLACK);
-  tft.setRotation(1);
-  // Turn off LCD backlight
-  pinMode(TFT_LEDA_PIN, OUTPUT);  
-  digitalWrite(TFT_LEDA_PIN, 0);    
-  
-  // Write initial diagnose to serial port
-  Serial.println("");
-  Serial.println("Hello, this is T-Dongle-S3 providing stock market information.");
-  Serial.println("I'm alive and well.");
-  Serial.println("");
-
-  // Connect to Wi-Fi network
-  WiFi.mode(WIFI_STA);
-  ESP_WiFiManager wifiManager;  
-  //wifiManager.resetSettings();
-  
-  bool ok = true;
-  do {
-    Serial.println("Connecting to wifi...");
-    ok = wifiManager.autoConnect("T-Dongle-S3");
-    if (!ok) {
-      Serial.println("Failled to connect to wifi. Retrying.");
-      delay(DELAY);
-    } else {
-      Serial.printf("Connected to wifi <%s>.\n", WiFi.SSID());
-    }
-  } while (!ok);
-
-  // Inital text screen setup
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("SPX", 0, 0, TFT_FONT);
-  tft.drawString("NDX", 0, tft.fontHeight(TFT_FONT), TFT_FONT);
-  tft.drawString("T10", 0, tft.fontHeight(TFT_FONT)*2, TFT_FONT);
-  tft.setTextDatum(TR_DATUM);
-  black_width = tft.textWidth("XXXXXXX");
-}
-
-// ------------------------------------------------------------------------------------
-
-// A structure that represents a stock quote with its value, previous close, change and if the market is open
-typedef struct {
-  double current;
-  double previousClose;
-  double percentageChange;
-  bool marketOpen;
-} quote;
-
-// We are going to have three stock quotes (S&P500, NASDAQ100 and T-Bill 10 years)
-quote spx, ndx, bnd;
-
-// Helper function to extract a value from JSON response
+// Extract a numeric value from JSON response
 double extractValue(const String& payload, const char* field) {
   int start = payload.indexOf(field) + strlen(field);
   if (start > strlen(field)) {
@@ -135,10 +95,11 @@ double extractValue(const String& payload, const char* field) {
   return 0.0;
 }
 
-// Helper function to fetch and parse quote data
+// Fetch and parse quote data from Yahoo Finance
 bool fetchQuote(HTTPClient& http, WiFiClientSecure& client, const char* symbol, quote& data) {
   Serial.printf("Fetching %s data...\n", symbol);
   
+  // Build URL and initialize HTTP request
   char url[128];
   snprintf(url, sizeof(url), "https://query2.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=1d", symbol);
   
@@ -147,23 +108,32 @@ bool fetchQuote(HTTPClient& http, WiFiClientSecure& client, const char* symbol, 
     return false;
   }
   
-  http.addHeader("User-Agent", "Mozilla/5.0");
+  http.addHeader("User-Agent", USER_AGENT);
   int httpCode = http.GET();
   
+  // Process response
   if (httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
     Serial.printf("Got %s response\n", symbol);
     
-    // Find the meta section
+    // Extract data from the meta section
     int metaStart = payload.indexOf("\"meta\":{");
     if (metaStart != -1) {
       int metaEnd = payload.indexOf("}", metaStart);
       if (metaEnd != -1) {
         String metaSection = payload.substring(metaStart, metaEnd + 1);
         
+        // Parse the required fields
         data.current = extractValue(metaSection, "\"regularMarketPrice\":");
         data.previousClose = extractValue(metaSection, "\"chartPreviousClose\":");
-        data.percentageChange = ((data.current - data.previousClose) / data.previousClose) * 100.0;
+        
+        // Calculate percentage change
+        if (data.previousClose != 0.0) {
+          data.percentageChange = ((data.current - data.previousClose) / data.previousClose) * 100.0;
+        } else {
+          data.percentageChange = 0.0;
+        }
+        
         data.marketOpen = true;
         Serial.printf("%s data parsed successfully\n", symbol);
         return true;
@@ -175,12 +145,13 @@ bool fetchQuote(HTTPClient& http, WiFiClientSecure& client, const char* symbol, 
   return false;
 }
 
-// Use Yahoo Finance API to get the relevant quotes from the internet
+// Fetch all quotes from Yahoo Finance
 void getQuotes() {
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure(); // Skip certificate verification
   
+  // Fetch each quote with error handling
   bool spxSuccess = fetchQuote(http, client, "^GSPC", spx);
   http.end();
   delay(1000);
@@ -192,6 +163,7 @@ void getQuotes() {
   bool bndSuccess = fetchQuote(http, client, "^TNX", bnd);
   http.end();
 
+  // Print results to serial
   if (spxSuccess && ndxSuccess && bndSuccess) {
     Serial.println("--------------------------------------------");
     Serial.printf("SPX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", spx.current, spx.previousClose, spx.percentageChange, spx.marketOpen);
@@ -202,11 +174,10 @@ void getQuotes() {
   }
 }
 
-// Write a stock quote to the TFT screen at a certain vertical position.
-// The separator char is use to provide scaling in case of showing thousands or millis
+// Display a stock quote on the TFT at the specified position
 void drawQuote(const quote& symbol, int pos, char sep) {
-  // Set drawing colour according to market state and if the stock is up or down
-  if (symbol.marketOpen == false) {
+  // Set color based on market state and price movement
+  if (!symbol.marketOpen) {
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
   } else if (symbol.current > symbol.previousClose) {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -216,19 +187,17 @@ void drawQuote(const quote& symbol, int pos, char sep) {
     tft.setTextColor(TFT_RED, TFT_BLACK);
   }
 
-  // Actually write the stock value to the TFT
+  // Format and display the value
   char buf[BUF_SIZE];
-  if (pos == 2) { // T10
-    comma_separator(symbol.current, buf, sep, 4);
-  } else { // SPX and NDX
-    comma_separator(symbol.current, buf, sep, 0);
-  }
-  tft.drawString(buf, TFT_HEIGHT, tft.fontHeight(TFT_FONT)*pos, TFT_FONT);
+  int decimals = (pos == 2) ? 4 : 0; // 4 decimal places for T10, 0 for others
+  comma_separator(symbol.current, buf, sep, decimals);
+  tft.drawString(buf, TFT_HEIGHT, tft.fontHeight(TFT_FONT) * pos, TFT_FONT);
 }
 
+// Display the percentage change on the TFT at the specified position
 void drawPercentChange(const quote& symbol, int pos) {
-  // Set drawing colour according to market state and if the stock is up or down
-  if (symbol.marketOpen == false) { 
+  // Set color based on market state and change direction
+  if (!symbol.marketOpen) { 
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
   } else if (symbol.percentageChange > 0.0) {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -238,24 +207,75 @@ void drawPercentChange(const quote& symbol, int pos) {
     tft.setTextColor(TFT_RED, TFT_BLACK);
   }
 
-  // Actually write the stock percentage change from the previous day to the TFT
+  // Format and display the percentage change
   char buf[BUF_SIZE];
   sprintf(buf, "%+.1f%%", symbol.percentageChange);
-  tft.drawString(buf, TFT_HEIGHT, tft.fontHeight(TFT_FONT)*pos, TFT_FONT);
+  tft.drawString(buf, TFT_HEIGHT, tft.fontHeight(TFT_FONT) * pos, TFT_FONT);
 }
 
-// Main looop showing the quotes on the TFT screen
+// ------------------------------------------------------------------------------------
+// Setup function - runs once at startup
+void setup() {
+  // Initialize serial and TFT
+  Serial.begin(115200);
+  tft.init();
+  tft.setTextFont(7);
+  tft.fillRect(0, 0, TFT_WIDTH, TFT_HEIGHT, TFT_BLACK);
+  tft.setRotation(1);
+  
+  // Turn off LCD backlight
+  pinMode(TFT_LEDA_PIN, OUTPUT);  
+  digitalWrite(TFT_LEDA_PIN, 0);    
+  
+  // Print welcome message
+  Serial.println("");
+  Serial.println("Hello, this is T-Dongle-S3 providing stock market information.");
+  Serial.println("I'm alive and well.");
+  Serial.println("");
+
+  // Connect to Wi-Fi
+  WiFi.mode(WIFI_STA);
+  ESP_WiFiManager wifiManager;  
+  //wifiManager.resetSettings(); // Uncomment to reset saved WiFi credentials
+  
+  bool connected = false;
+  do {
+    Serial.println("Connecting to WiFi...");
+    connected = wifiManager.autoConnect("T-Dongle-S3");
+    if (!connected) {
+      Serial.println("Failed to connect to WiFi. Retrying.");
+      delay(DELAY);
+    } else {
+      Serial.printf("Connected to WiFi <%s>.\n", WiFi.SSID().c_str());
+    }
+  } while (!connected);
+
+  // Setup TFT display
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString("SPX", 0, 0, TFT_FONT);
+  tft.drawString("NDX", 0, tft.fontHeight(TFT_FONT), TFT_FONT);
+  tft.drawString("T10", 0, tft.fontHeight(TFT_FONT) * 2, TFT_FONT);
+  tft.setTextDatum(TR_DATUM);
+  black_width = tft.textWidth("XXXXXXX");
+}
+
+// ------------------------------------------------------------------------------------
+// Main loop
 void loop() {
+  // Get stock quotes
   getQuotes();
 
-  tft.fillRect(TFT_HEIGHT-black_width, 0, black_width, TFT_HEIGHT, TFT_BLACK);
+  // Display stock values
+  tft.fillRect(TFT_HEIGHT - black_width, 0, black_width, TFT_HEIGHT, TFT_BLACK);
   drawQuote(spx, 0, ',');
   drawQuote(ndx, 1, ',');
   drawQuote(bnd, 2, '.');
 
   delay(DELAY);
 
-  tft.fillRect(TFT_HEIGHT-black_width, 0, black_width, TFT_HEIGHT, TFT_BLACK);
+  // Display percentage changes
+  tft.fillRect(TFT_HEIGHT - black_width, 0, black_width, TFT_HEIGHT, TFT_BLACK);
   drawPercentChange(spx, 0);
   drawPercentChange(ndx, 1);
   drawPercentChange(bnd, 2);
