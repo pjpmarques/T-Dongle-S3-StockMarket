@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
@@ -18,22 +17,45 @@ int black_width;                  // Width of the rectagle that needs to be clea
 // ------------------------------------------------------------------------------------
 
 // Given a number convert it to a thousands separated string using a specific separating character
-void comma_separator(int num, char *str, char sep) {
+void comma_separator(double num, char *str, char sep, int decimals = 0) {
     char temp[BUF_SIZE];
     int i = 0, j = 0;
-    sprintf(temp, "%d", num);
+    char format[10];
+    sprintf(format, "%%0.%df", decimals);
+    sprintf(temp, format, num);
     int len = strlen(temp);
-    int k = len % 3;
-    if (k == 0) {
-        k = 3;
+    int decimalPos = -1;
+    
+    // Find decimal point position
+    for (i = 0; i < len; i++) {
+        if (temp[i] == '.') {
+            decimalPos = i;
+            break;
+        }
     }
-    while (temp[i] != '\0') {
+    
+    // Handle the whole number part
+    i = 0;
+    int k = (decimalPos != -1 ? decimalPos : len) % 3;
+    if (k == 0) k = 3;
+    
+    while (i < (decimalPos != -1 ? decimalPos : len)) {
         if (i == k) {
             str[j++] = sep;
             k += 3;
         }
         str[j++] = temp[i++];
     }
+    
+    // Add decimal part if needed
+    if (decimalPos != -1) {
+        str[j++] = '.';
+        i = decimalPos + 1;
+        while (i < len && (i - decimalPos) <= decimals) {
+            str[j++] = temp[i++];
+        }
+    }
+    
     str[j] = '\0';
 }
 
@@ -97,47 +119,202 @@ typedef struct {
 // We are going to have three stock quotes (S&P500, NASDAQ100 and T-Bill 10 years)
 quote spx, ndx, bnd;
 
-// Use Yahoo Finance to get the relevant quotes from the internet
+// Use Yahoo Finance API to get the relevant quotes from the internet
 void getQuotes() {
-  // Use Yahoo Finance API to get the current value of S&P500 and NASDAQ
   HTTPClient http;
-  http.begin("https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5ESPX,%5ENDX,%5ETNX");
+  
+  // Get S&P500 data
+  Serial.println("Fetching SPX data...");
+  http.begin("https://query2.finance.yahoo.com/v8/finance/chart/^GSPC?interval=1d&range=1d");
+  http.addHeader("User-Agent", "Mozilla/5.0");
   int httpCode = http.GET();
+  
   if (httpCode == HTTP_CODE_OK) {
     String payload = http.getString();
-
-    // Parse JSON data
-    DynamicJsonDocument doc(8192);
-    DeserializationError error = deserializeJson(doc, payload);
-    if (!error) {
-      Serial.println("--------------------------------------------");
-      spx.current = doc["quoteResponse"]["result"][0]["regularMarketPrice"];
-      spx.previousClose = doc["quoteResponse"]["result"][0]["regularMarketPreviousClose"];
-      spx.percentageChange = doc["quoteResponse"]["result"][0]["regularMarketChangePercent"];
-      spx.marketOpen = strcmp(doc["quoteResponse"]["result"][0]["marketState"], "REGULAR") == 0 ? true : false;
-
-      ndx.current = doc["quoteResponse"]["result"][1]["regularMarketPrice"];
-      ndx.previousClose = doc["quoteResponse"]["result"][1]["regularMarketPreviousClose"];
-      ndx.percentageChange = doc["quoteResponse"]["result"][1]["regularMarketChangePercent"];
-      ndx.marketOpen = strcmp(doc["quoteResponse"]["result"][1]["marketState"], "REGULAR") == 0 ? true : false;
-      
-      bnd.current = (double)(doc["quoteResponse"]["result"][2]["regularMarketPrice"]) * 1000.0;
-      bnd.previousClose = (double)(doc["quoteResponse"]["result"][2]["regularMarketPreviousClose"]) * 1000.0;
-      bnd.percentageChange = doc["quoteResponse"]["result"][2]["regularMarketChangePercent"];
-      bnd.marketOpen = strcmp(doc["quoteResponse"]["result"][2]["marketState"], "REGULAR") == 0 ? true : false;
-      
-      Serial.printf("SPX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", spx.current, spx.previousClose, spx.percentageChange, spx.marketOpen);
-      Serial.printf("NDX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", ndx.current, ndx.previousClose, ndx.percentageChange, ndx.marketOpen);
-      Serial.printf("T10 \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", bnd.current, bnd.previousClose, bnd.percentageChange, bnd.marketOpen);
+    Serial.println("Got SPX response");
+    
+    // Find the meta section
+    int metaStart = payload.indexOf("\"meta\":{");
+    if (metaStart != -1) {
+      int metaEnd = payload.indexOf("}", metaStart);
+      if (metaEnd != -1) {
+        String metaSection = payload.substring(metaStart, metaEnd + 1);
+        Serial.println("Meta section found:");
+        Serial.println(metaSection);
+        
+        // Extract values using string manipulation
+        int priceStart = metaSection.indexOf("\"regularMarketPrice\":") + 20;
+        int priceEnd = metaSection.indexOf(",", priceStart);
+        int prevCloseStart = metaSection.indexOf("\"chartPreviousClose\":") + 20;
+        int prevCloseEnd = metaSection.indexOf(",", prevCloseStart);
+        
+        if (priceStart > 20 && priceEnd > priceStart && prevCloseStart > 20 && prevCloseEnd > prevCloseStart) {
+          String priceStr = metaSection.substring(priceStart, priceEnd);
+          String prevCloseStr = metaSection.substring(prevCloseStart, prevCloseEnd);
+          
+          // Clean up the strings by removing any whitespace, quotes, and colons
+          priceStr.trim();
+          prevCloseStr.trim();
+          if (priceStr.startsWith("\"")) priceStr = priceStr.substring(1);
+          if (priceStr.endsWith("\"")) priceStr = priceStr.substring(0, priceStr.length() - 1);
+          if (prevCloseStr.startsWith("\"")) prevCloseStr = prevCloseStr.substring(1);
+          if (prevCloseStr.endsWith("\"")) prevCloseStr = prevCloseStr.substring(0, prevCloseStr.length() - 1);
+          if (priceStr.startsWith(":")) priceStr = priceStr.substring(1);
+          if (prevCloseStr.startsWith(":")) prevCloseStr = prevCloseStr.substring(1);
+          
+          Serial.printf("Debug - Price string: '%s', PrevClose string: '%s'\n", priceStr.c_str(), prevCloseStr.c_str());
+          
+          spx.current = priceStr.toDouble();
+          spx.previousClose = prevCloseStr.toDouble();
+          spx.percentageChange = ((spx.current - spx.previousClose) / spx.previousClose) * 100.0;
+          spx.marketOpen = true;
+          Serial.println("SPX data parsed successfully");
+        } else {
+          Serial.println("SPX data parsing failed - couldn't find values in meta section");
+          Serial.printf("Debug - priceStart: %d, priceEnd: %d, prevCloseStart: %d, prevCloseEnd: %d\n", 
+                       priceStart, priceEnd, prevCloseStart, prevCloseEnd);
+        }
+      } else {
+        Serial.println("Could not find end of meta section");
+      }
     } else {
-      Serial.println("Error deserializing data: ");
-      Serial.println(error.f_str());
-    }    
+      Serial.println("Could not find meta section");
+    }
   } else {
-    Serial.println("Error getting data from Yahoo.");
+    Serial.printf("SPX HTTP request failed, error: %d\n", httpCode);
   }
-
   http.end();
+  delay(1000);
+
+  // Get NASDAQ data
+  Serial.println("Fetching NDX data...");
+  http.begin("https://query2.finance.yahoo.com/v8/finance/chart/^NDX?interval=1d&range=1d");
+  http.addHeader("User-Agent", "Mozilla/5.0");
+  httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    Serial.println("Got NDX response");
+    
+    // Find the meta section
+    int metaStart = payload.indexOf("\"meta\":{");
+    if (metaStart != -1) {
+      int metaEnd = payload.indexOf("}", metaStart);
+      if (metaEnd != -1) {
+        String metaSection = payload.substring(metaStart, metaEnd + 1);
+        Serial.println("Meta section found:");
+        Serial.println(metaSection);
+        
+        // Extract values using string manipulation
+        int priceStart = metaSection.indexOf("\"regularMarketPrice\":") + 20;
+        int priceEnd = metaSection.indexOf(",", priceStart);
+        int prevCloseStart = metaSection.indexOf("\"chartPreviousClose\":") + 20;
+        int prevCloseEnd = metaSection.indexOf(",", prevCloseStart);
+        
+        if (priceStart > 20 && priceEnd > priceStart && prevCloseStart > 20 && prevCloseEnd > prevCloseStart) {
+          String priceStr = metaSection.substring(priceStart, priceEnd);
+          String prevCloseStr = metaSection.substring(prevCloseStart, prevCloseEnd);
+          
+          // Clean up the strings by removing any whitespace, quotes, and colons
+          priceStr.trim();
+          prevCloseStr.trim();
+          if (priceStr.startsWith("\"")) priceStr = priceStr.substring(1);
+          if (priceStr.endsWith("\"")) priceStr = priceStr.substring(0, priceStr.length() - 1);
+          if (prevCloseStr.startsWith("\"")) prevCloseStr = prevCloseStr.substring(1);
+          if (prevCloseStr.endsWith("\"")) prevCloseStr = prevCloseStr.substring(0, prevCloseStr.length() - 1);
+          if (priceStr.startsWith(":")) priceStr = priceStr.substring(1);
+          if (prevCloseStr.startsWith(":")) prevCloseStr = prevCloseStr.substring(1);
+          
+          Serial.printf("Debug - Price string: '%s', PrevClose string: '%s'\n", priceStr.c_str(), prevCloseStr.c_str());
+          
+          ndx.current = priceStr.toDouble();
+          ndx.previousClose = prevCloseStr.toDouble();
+          ndx.percentageChange = ((ndx.current - ndx.previousClose) / ndx.previousClose) * 100.0;
+          ndx.marketOpen = true;
+          Serial.println("NDX data parsed successfully");
+        } else {
+          Serial.println("NDX data parsing failed - couldn't find values in meta section");
+          Serial.printf("Debug - priceStart: %d, priceEnd: %d, prevCloseStart: %d, prevCloseEnd: %d\n", 
+                       priceStart, priceEnd, prevCloseStart, prevCloseEnd);
+        }
+      } else {
+        Serial.println("Could not find end of meta section");
+      }
+    } else {
+      Serial.println("Could not find meta section");
+    }
+  } else {
+    Serial.printf("NDX HTTP request failed, error: %d\n", httpCode);
+  }
+  http.end();
+  delay(1000);
+
+  // Get 10-year Treasury data
+  Serial.println("Fetching T10 data...");
+  http.begin("https://query2.finance.yahoo.com/v8/finance/chart/^TNX?interval=1d&range=1d");
+  http.addHeader("User-Agent", "Mozilla/5.0");
+  httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    Serial.println("Got T10 response");
+    
+    // Find the meta section
+    int metaStart = payload.indexOf("\"meta\":{");
+    if (metaStart != -1) {
+      int metaEnd = payload.indexOf("}", metaStart);
+      if (metaEnd != -1) {
+        String metaSection = payload.substring(metaStart, metaEnd + 1);
+        Serial.println("Meta section found:");
+        Serial.println(metaSection);
+        
+        // Extract values using string manipulation
+        int priceStart = metaSection.indexOf("\"regularMarketPrice\":") + 20;
+        int priceEnd = metaSection.indexOf(",", priceStart);
+        int prevCloseStart = metaSection.indexOf("\"chartPreviousClose\":") + 20;
+        int prevCloseEnd = metaSection.indexOf(",", prevCloseStart);
+        
+        if (priceStart > 20 && priceEnd > priceStart && prevCloseStart > 20 && prevCloseEnd > prevCloseStart) {
+          String priceStr = metaSection.substring(priceStart, priceEnd);
+          String prevCloseStr = metaSection.substring(prevCloseStart, prevCloseEnd);
+          
+          // Clean up the strings by removing any whitespace, quotes, and colons
+          priceStr.trim();
+          prevCloseStr.trim();
+          if (priceStr.startsWith("\"")) priceStr = priceStr.substring(1);
+          if (priceStr.endsWith("\"")) priceStr = priceStr.substring(0, priceStr.length() - 1);
+          if (prevCloseStr.startsWith("\"")) prevCloseStr = prevCloseStr.substring(1);
+          if (prevCloseStr.endsWith("\"")) prevCloseStr = prevCloseStr.substring(0, prevCloseStr.length() - 1);
+          if (priceStr.startsWith(":")) priceStr = priceStr.substring(1);
+          if (prevCloseStr.startsWith(":")) prevCloseStr = prevCloseStr.substring(1);
+          
+          Serial.printf("Debug - Price string: '%s', PrevClose string: '%s'\n", priceStr.c_str(), prevCloseStr.c_str());
+          
+          bnd.current = priceStr.toDouble();
+          bnd.previousClose = prevCloseStr.toDouble();
+          bnd.percentageChange = ((bnd.current - bnd.previousClose) / bnd.previousClose) * 100.0;
+          bnd.marketOpen = true;
+          Serial.println("T10 data parsed successfully");
+        } else {
+          Serial.println("T10 data parsing failed - couldn't find values in meta section");
+          Serial.printf("Debug - priceStart: %d, priceEnd: %d, prevCloseStart: %d, prevCloseEnd: %d\n", 
+                       priceStart, priceEnd, prevCloseStart, prevCloseEnd);
+        }
+      } else {
+        Serial.println("Could not find end of meta section");
+      }
+    } else {
+      Serial.println("Could not find meta section");
+    }
+  } else {
+    Serial.printf("T10 HTTP request failed, error: %d\n", httpCode);
+  }
+  http.end();
+
+  Serial.println("--------------------------------------------");
+  Serial.printf("SPX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", spx.current, spx.previousClose, spx.percentageChange, spx.marketOpen);
+  Serial.printf("NDX \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", ndx.current, ndx.previousClose, ndx.percentageChange, ndx.marketOpen);
+  Serial.printf("T10 \t %8.1f from %8.1f \t (%+.1f%%) MarketOpen=%d\n", bnd.current, bnd.previousClose, bnd.percentageChange, bnd.marketOpen);
 }
 
 // Write a stock quote to the TFT screen at a certain vertical position.
@@ -156,7 +333,11 @@ void drawQuote(const quote& symbol, int pos, char sep) {
 
   // Actually write the stock value to the TFT
   char buf[BUF_SIZE];
-  comma_separator(symbol.current, buf, sep);
+  if (pos == 2) { // T10
+    comma_separator(symbol.current, buf, sep, 4);
+  } else { // SPX and NDX
+    comma_separator(symbol.current, buf, sep, 0);
+  }
   tft.drawString(buf, TFT_HEIGHT, tft.fontHeight(TFT_FONT)*pos, TFT_FONT);
 }
 
