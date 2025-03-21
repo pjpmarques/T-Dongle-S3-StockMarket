@@ -152,7 +152,7 @@ void getQuotes() {
   client.setInsecure(); // Skip certificate verification
   
   // Fetch each quote with error handling
-  bool spxSuccess = fetchQuote(http, client, "^GSPC", spx);
+  bool spxSuccess = fetchQuote(http, client, "^SPX", spx);
   http.end();
   delay(1000);
   
