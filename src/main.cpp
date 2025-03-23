@@ -209,7 +209,7 @@ void drawPercentChange(const quote& symbol, int pos) {
 
   // Format and display the percentage change
   char buf[BUF_SIZE];
-  sprintf(buf, "%+.1f%%", symbol.percentageChange);
+  sprintf(buf, "%+.2f%%", symbol.percentageChange);
   tft.drawString(buf, TFT_HEIGHT, tft.fontHeight(TFT_FONT) * pos, TFT_FONT);
 }
 
